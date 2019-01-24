@@ -1,0 +1,273 @@
+---
+title: "Untitled"
+author: "Daniel Briggs"
+date: "November 25, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+1. Specify a Bayesian model for f, with Dirichlet distribution for $\pi$ and independent Normal-Inverse Gamma distributions for $\mu_k$ and $\sigma^2_k$.
+
+Fortunately, the normal model is conjugate with another normal model for the means $\mu_k$ and with the inverse gamma for $\sigma^2_k$. Using an auxiliary variable $Z$, we obtain the following conditional distributions. 
+
+$$ 
+P(\pi|\mu, \sigma^2, X,Z) \sim Dirichlet(\delta_1 + n_1,..,\delta_k + n_k)
+$$
+
+$$
+P(Z_j = i|x_j,\pi,\mu,\sigma^2) = \dfrac{\pi_iN(x_j;\mu_i,\sigma^2_i)}{\sum_K\pi_iN(x_j;\mu_i,\sigma^2_i)}
+$$
+
+$$
+\dfrac{1}{\sigma^2_i} \sim Gamma(\dfrac{a + n_i}{2},\dfrac{b + \sum_{j:Z_j=i}(x_j-\mu_i)^2}{2})
+$$
+
+
+$$
+\sigma_i^2 = \frac{1}{\frac{1}{\sigma_{o_i}^2} + n_i}
+$$
+
+$$
+\mu_i = (\mu_{o_i}\frac{1}{\sigma_{o_i}^2} + \bar x_in_i) \times \sigma_i^2
+$$
+
+$$
+\mu_i \sim N(\mu_i,\sigma_i^2)
+$$
+
+
+2. Use K = 5. Simulate F from the specified prior. Simulate $X_1 ... X_{100}$ from F.
+
+```{r}
+library(tidyverse)
+set.seed(35)
+
+# group 1
+
+group_1 <- rnorm(20, -50, 1)
+group_2 <- rnorm(20, -25, 1)
+group_3 <- rnorm(20, 0, 1)
+group_4 <- rnorm(20, 25, 1)
+group_5 <- rnorm(20, 50, 1)
+
+## combining all
+
+sim_data <- data_frame(x = c(group_1, group_2, group_3, group_4, group_5),
+                       group = c(rep(1,20), rep(2,20), rep(3,20), rep(4,20), rep(5,20)))
+sim_data %>%
+  group_by(group) %>%
+  summarise(share = n()/100)
+
+hist(sim_data$x)
+
+sim_data <- data_frame(x = sim_data$x,
+                       group = sim_data$group,
+                       group_mcmc = sample(1:5, 100, replace = TRUE))
+
+rm(group_1, group_2, group_3, group_4, group_5)
+
+mu <- mu_0 <- sim_data %>% group_by(group) %>% summarise(mean = mean(x)) %>% .$mean
+sigma2 <- sigma2_0 <- sim_data %>% group_by(group) %>% summarise(mean = var(x)) %>% .$mean
+prec <- 1/sigma2_0
+
+z <- sim_data$group_mcmc
+x <- sim_data$x
+k <- length(unique(z))
+pi <- rep(1/k,k)
+
+a <- b <- 1
+iters <- 10000
+```
+
+3. Specify an MCMC for approximate sampling of $F|X$ assuming $x_1 ... x_i$ are iid samples from the mixture. 
+
+```{r}
+sample_z <- function(mu,x,pi){
+  dmat = outer(mu,x,"-") 
+  p.z.given.x = as.vector(pi) * dnorm(dmat,0,1)
+  p.z.given.x = apply(p.z.given.x,2,function(x){return(x/sum(x))}) 
+  z = rep(NA, length(x))
+  for(i in 1:length(z)){
+    z[i] = sample(1:length(pi), size=1,prob=p.z.given.x[,i],replace=TRUE)
+  }
+  return(z)
+}
+
+sample_z(mu,x,pi)
+```
+
+
+
+```{r}
+sample_pi <- function(z,k){
+  COUNTS <- colSums(outer(z,1:k,FUN="=="))
+  pi <- gtools::rdirichlet(1,COUNTS+1)
+  return(pi)
+}
+
+sample_pi(z,k)
+```
+
+
+
+```{r}
+sample_sigma <- function(z,x,k,a,b){
+  
+  b_i <- a_i <- sigma_i <- rep(NA,k)
+  
+  for(i in 1:k){
+    sn <- sum(z == i)
+    sm <- ifelse(sn==0,0,mean(x[z==i]))
+    b_i[i] <- b + sum((x[which(z == i)] - sm)^2)
+    a_i[i] <- a + sn
+    sigma_i[i] <- 1/rgamma(1,a_i[i]/2, b_i[i]/2)
+  }
+  
+  return(sigma_i)
+  
+}
+
+sample_sigma(z,x,k,a,b)
+```
+
+```{r}
+sample_mu <- function(z, x, k, mu_0, sigma2_0){
+ 
+  mu_u <- rep(NA,k)
+  for(i in 1:length(mu_0)){
+    sn <- sum(z == i)
+    sm <- ifelse(sn==0,0,mean(x[z==i]))
+    
+    
+    sigma_i <- 1/(1/sigma2_0[i] + sn)
+    mu_i <- (mu_0[i] * 1/sigma2_0[i] + sm*sn)*sigma_i
+    mu_u[i] <- rnorm(1,mu_i, sqrt(sigma_i))
+  }
+  
+  return(mu_u)
+  
+}
+
+
+sample_mu(z, x, k, mu_0, sigma2_0)
+```
+
+
+1. To implement the gibbs sampler, we must first sample from z conditionally on everything else
+
+2. We then sample from $\pi$ conditionally on everything else.
+
+3. We then sample from $\mu_i$ for each $\mu$ value for each component in our mixture. 
+
+4. We then sample from $\sigma^2_i$ for each $\sigma^2$ value for each component in our mixture.
+
+5. We iterate this many times ($\sim 10,000$) discarding a certain number of preliminary samples. 
+
+```{r}
+gibbs <- function(iterations = 10000, z, x,mu_0,sigma2_0,pi){
+    k <- length(unique(z))
+    MU <- PI <- SIG <- matrix(ncol = k, nrow = iterations)
+    mu <- mu_0
+    sigma2 <- sigma2_0
+    X <- rep(NA,iterations)
+    for(i in 1:iterations){
+      z <- sample_z(mu = mu, x = x, pi = pi)
+      PI[i,] <- pi <- sample_pi(z = z, k = k)
+      MU[i,] <- mu <- sample_mu(z = z,x = x,k = k,mu_0 = mu_0,sigma2_0 = sigma2_0)
+      SIG[i,] <- sigma2 <- sample_sigma(z = z, x = x, k = k, a = a, b = b)
+    
+
+        z_sample <- sample(x = 1:k,size = 1, prob = pi)
+        X[i] <-rnorm(1,mu[z_sample],sqrt(sigma2[z_sample]))
+      
+    }
+    
+    
+  return(list(PI = PI, MU = MU, SIG = SIG,X = X))
+}
+```
+
+
+```{r}
+gibbs_sample <- gibbs(iterations = 10000, z = z, x =x,mu_0 = mu_0,sigma2_0 = sigma2_0,pi = rep(1/5,5))
+```
+
+```{r}
+apply(gibbs_sample$PI[5000:10000,],2,mean)
+apply(gibbs_sample$MU[5000:10000,],2,mean)
+apply(gibbs_sample$SIG[5000:10000,],2,mean)
+```
+
+```{r}
+plot(gibbs_sample$MU[1000:10000,1], type = "l", ylim = c(-55,55))
+lines(gibbs_sample$MU[1000:10000,2], col = 2)
+lines(gibbs_sample$MU[1000:10000,3], col = 3)
+lines(gibbs_sample$MU[1000:10000,4], col = 4)
+lines(gibbs_sample$MU[1000:10000,5], col = 5)
+```
+
+```{r}
+plot(gibbs_sample$SIG[1000:10000,1], type = "l", ylim = c(0,5))
+lines(gibbs_sample$SIG[1000:10000,2], col = 2)
+lines(gibbs_sample$SIG[1000:10000,3], col = 3)
+lines(gibbs_sample$SIG[1000:10000,4], col = 4)
+lines(gibbs_sample$SIG[1000:10000,5], col = 5)
+```
+
+4.Use the MCMC to compute an approximation of $P(X_{i+1}|X_1, . . . , X_i )$. Provide the code with one example.
+
+```{r}
+
+x = as.vector(gibbs_sample$X[5000:10000])
+
+hist(sim_data$x, prob=TRUE, col="grey", ylim = c(0,0.08), xlim = c(-60,60), breaks = seq(-60, 60, 2))
+lines(density(x), col="blue", lwd=2)
+```
+
+5. Apply the code to the galaxy data (http://www.karlin.mff.cuni.cz/~komarek/software/mixAK/Galaxy.pdf). Provide a qualitative comparison of the results of your MCMC with the figures in http://www.karlin.mff.cuni.cz/~komarek/software/mixAK/Galaxy.pdf. Compute an approximation of $E(X_{i+1}|X_1, . . . , X_i),$ $Var(X_{i+1}|X_1, . . . , X_i).$
+```{r}
+library(MASS)
+
+data("galaxies")
+
+galaxy <- galaxies
+
+galaxy <- data.frame(x = galaxies/1000,
+                     z = sample(1:3, 82, replace = TRUE))
+
+
+mu <- mu_0  <- galaxy %>% group_by(z) %>% summarise(mean = mean(x)) %>% .$mean
+
+sigma2 <- sigma2_0 <- galaxy %>% group_by(z) %>% summarise(sigma = var(x)) %>% .$sigma
+
+prec <- 1/sigma2_0
+
+z <- galaxy$z
+
+x <- galaxy$x
+
+k <- length(unique(z))
+
+galaxy_gibbs <- gibbs(iterations = 10000, z = z, x = x, mu_0 = mu_0, sigma2_0 = sigma2_0, pi = rep(1/k,k))
+
+xx = as.vector(galaxy_gibbs$X[1000:10000])
+
+hist(galaxy$x, prob = TRUE, ylim = c(0,0.2), breaks = seq(0,40,2))
+lines(density(xx), col="blue", lwd=2)
+
+```
+
+
+The image above specifying for three components is remarkably similar to the image in the pdf when k = 3. Our algorithm appears to have converged to the target distribution $\pi$. 
+
+```{r}
+apply(galaxy_gibbs$PI[5000:10000,],2,mean)
+apply(galaxy_gibbs$MU[5000:10000,],2,mean)
+apply(galaxy_gibbs$SIG[5000:10000,],2,mean)
+```
+
+It also appears we have reasonable values for every $\sigma^2_k$, $\mu_k$, and $\pi_k$.
