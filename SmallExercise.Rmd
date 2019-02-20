@@ -1,0 +1,180 @@
+---
+title: "BST-262: Assignment 1"
+author: "Daniel Briggs"
+date: "Due Friday, November 30 2018, 5pm"
+output: pdf_document
+---
+
+
+
+
+```{r}
+library(tidyverse)
+library(fiftystater)
+library(knitr)
+```
+
+
+
+# Exercise 1 - Julia (language: Julia)
+
+Here for any dictionary, we will take the maximum value's (assuming numeric values) index, and return the key which matches that value.
+
+```
+function getmax(d)
+    maxind = argmax(collect(values(d))) #identify the index of the maximum value
+    return collect(keys(d))[maxind] #indices the key by the indexed max
+end
+```
+
+# Exercise 2 - Data parallelism vs task parallism (language: R)
+
+## Question 1
+
+Add comments
+
+```{r}
+# Add your R code
+library(tm)
+library(doParallel)
+
+#patterns for mapping
+patterns <- c('ARTHROTEC', 'LIPITOR', 'VOLTAREN')
+
+#initializing vectors to hold the data
+proportions <- sums <- rep(NA,length(patterns))
+
+#extra index used for assignment
+k <- 1
+for(i in patterns){
+  
+  #initalize a corpus based on the pattern
+  cadec <- VCorpus(DirSource(directory = "data/cadec/text/", encoding = "UTF-8",pattern = i))
+  
+  #how many of each type?
+  sums[k] <- length(names(cadec))
+  
+  #getting the text vectors
+  cadec_content <- sapply(content(cadec), content)
+
+  #creating the cluster
+  cl <- makeCluster(detectCores())
+  
+  #assignment of tasks among the cluster
+  cadec_part <- clusterSplit(cl,seq_along(cadec))
+  cadec_partitioned <- lapply(cadec_part, function(p) cadec_content[p])
+  
+  #parallel saply to find pattern
+  l <- parSapply(cl, cadec_partitioned, grepl, pattern = "pain")
+
+  proportions[k] <- sum(parSapply(cl, l, sum))/sums[k]
+
+  stopCluster(cl)
+  
+  k <- k+1
+}
+
+
+data.frame(drugs= patterns, total = sums, proportion = proportions)
+```
+
+## Question 2
+
+Add comments
+
+```{r}
+parallel_pattern_sums <- function(pattern, vCorp){ #wrapper function
+  corpus_content <- sapply(content(vCorp),content) #corpus content extraction
+  
+  cl <- makeCluster(detectCores()) #build cluster with cores
+  
+  corpus_part <- clusterSplit(cl, seq_along(corpus_content)) #partition tasks to cores
+
+  corpus_partioned <- lapply(corpus_part, function(p) corpus_content[p]) #grabs content from specified divided corpus
+  
+  l <- parSapply(cl,corpus_partioned,grepl, pattern = pattern) #parallel sapply
+  sum <- sum(parSapply(cl,l,sum)) #get the sum
+  
+  stopCluster(cl) #kills cluster
+  return(sum)
+}
+
+#execute code
+vc <- VCorpus(DirSource(directory = "data/cadec/text/", encoding = "UTF-8"))
+patterns2 <- c('pain', 'bleeding', 'headache', 'nausea')
+
+#get the sums
+sums <- base::sapply(patterns2, parallel_pattern_sums,vCorp = vc)
+print(sums)
+
+#sum the sums
+sum(sums)
+```
+
+
+
+# Exercise 3 - Grouped data operations and maps (language: R or Python)
+
+## Question 1
+
+Add comments
+
+```{r}
+# read in the csv
+inpat <- read_csv("data/medicare/Medicare_Provider_Charge_Inpatient_DRGALL_FY2015.csv")
+
+# determine the total cost by state
+state_inpat <- inpat %>% mutate(`Total Cost` = `Total Discharges` * `Average Total Payments`) %>% group_by(`Provider State`) %>% summarize(`In Cost` = sum(`Total Cost`))
+
+#print the resulting data frame
+state_inpat
+```
+
+
+## Question 2
+
+Add comments
+
+```{r}
+#read in the csv
+outpat <- read_csv('data/medicare/Medicare_Charge_Outpatient_APC28_CY2015_Provider.csv')
+
+#makes the names consistent across data frames
+names(outpat) <- gsub(pattern = "_",replacement = " ",x = names(outpat))
+
+#create the new data frame grouped by state and determining the total cost of services in each state
+state_outpat <- outpat %>% mutate(`Total Cost` = `Outpatient Services` * `Average Total Payments`) %>% group_by(`Provider State`) %>% summarize(`Out Cost` = sum(`Total Cost`))
+
+#print out the data set
+state_outpat
+```
+
+
+## Question 3
+
+Add comments
+
+```{r}
+#combine the data sets
+Merged_States <- state_inpat %>% inner_join(state_outpat) %>% mutate(`Total Cost` = `In Cost` + `Out Cost`)
+
+#manual processing of states
+states <- tolower(state.name[match(state.abb, Merged_States$`Provider State`)])
+states[which(is.na(states))] <- "district of columbia"
+Merged_States$`Provider State` <- states
+
+#read in map data
+data("fifty_states")
+
+#create the map
+ggplot(Merged_States, aes(map_id = `Provider State`)) +  #give the data ggplot
+  geom_map(aes(fill = log(`Total Cost`)), map = fifty_states) + #add the map layer
+  expand_limits(x = fifty_states$long, y = fifty_states$lat) + #make the limits according to lat and longitude
+  coord_map() + #project the map onto a 2D plane
+  scale_x_continuous(breaks = NULL) + scale_y_continuous(breaks = NULL) + #remove X/Y axis ticks ecause they are ugly
+  labs(x = "", y = "") + theme(legend.position = "left", 
+        panel.background = element_blank()) 
+
+```
+
+
