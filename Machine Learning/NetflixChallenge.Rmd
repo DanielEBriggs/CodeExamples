@@ -1,0 +1,255 @@
+---
+title: "Untitled"
+author: "Daniel Briggs"
+date: "February 20, 2019"
+output: html_document
+---
+
+---
+title: "Netflix Challenge"
+output: html_document
+---
+
+```{r, echo = FALSE}
+library(knitr)
+opts_chunk$set(cache = TRUE, message = FALSE)
+```
+
+Recommendation systems use rating data from many products and users to make recommendations for a specific user. Netflix uses a recommendation system to predict your ratings for a specific movie.
+
+In October 2006, Netflix offered a challenge to the data science community: _improve our recommendation algorithm by 10% and win a million dollars_. In September 2009, [the winners were announced](http://bits.blogs.nytimes.com/2009/09/21/netflix-awards-1-million-prize-and-starts-a-new-contest/). You can read a good summary of how the winning algorithm was put together [here](http://blog.echen.me/2011/10/24/winning-the-netflix-prize-a-summary/), and a more detailed explanation [here](http://www.netflixprize.com/assets/GrandPrize2009_BPC_BellKor.pdf).
+
+![winners](http://graphics8.nytimes.com/images/2009/09/21/technology/netflixawards.480.jpg)
+
+In this homework, you will build your own recommendation system. You will submit predicted recommendations for a test data set where we have kept the actual recommendations hidden. We will then check your performance on these predictions and have our own Netflix challenge. The winning team, defined by the best root mean squared error (RMSE), will receive a prize. The set that you will have to predict is available on GitHub [here](https://github.com/datasciencelabs/data/blob/master/movielens-test.csv.gz).
+
+RMSE was the metric used to judge entries in the Netflix challenge. The lower the RMSE was on Netflix's quiz set between the submittedrating predictions and the actual ratings, the better the method was. We will be using RMSE to evaluate our machine learning models in  this homework as well.
+
+$$\mbox{RMSE} = \sqrt{\frac{1}{N}\sum_{i=1}^N (\hat{Y}_i - Y_i)^2}$$
+
+Download and load the [large training data set which is compressed](https://github.com/datasciencelabs/data/blob/master/movielens-train.csv.gz) into R. Train a machine learning model of you choice. You may wish to utilize a technique such as cross-validation to optimize any parameters associated with your model, and you may implement any modelling technique you feel comfortable with. This may include regression, regularization techniques, matrix decompositions (such as utilized by the winning team [here](http://www.netflixprize.com/assets/ProgressPrize2008_BellKor.pdf)), etc.
+
+**Hint 1**: You can read in compressed file with `read_csv(gzfile(filename))`
+
+**Hint 2**: Use the `RMSE()` function below to check your accuracy.
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+Download the test data set available on GitHub [here](https://github.com/datasciencelabs/data/blob/master/movielens-test.csv.gz). Make predictions to fill in the `NA`s and save a file with the same format but with the ratings filled in to your repo. Submit this as a `.csv` file with your name in the file name (the file does not need to be compressed), along with the code you utilized to train the model, as part of your homework. 
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+filename <- 'movielens-train.csv.gz'
+url <- "https://github.com/datasciencelabs/data/blob/master/movielens-train.csv.gz?raw=true"
+download.file(url, filename, mod = 'wb')
+ratings <- read_csv(gzfile(filename))
+```
+
+
+
+First, we divide the file into a test and training set. We remove the ratings data file to save space. 
+
+
+
+```{r}
+set.seed(123)
+n_test <- nrow(ratings)/7
+indices <- sample(1:nrow(ratings), n_test, replace = F)
+train <- ratings[indices,]
+test <- ratings[-indices,]
+rm(ratings)
+gc()
+```
+
+
+
+We do a grid check for our first lambda to weight the movie rating.
+
+
+
+```{r}
+lambdas <- seq(2, 5, 0.05)
+mu <- mean(train$rating)
+tmp <- train %>% 
+  group_by(movieId) %>% 
+  summarize(sum = sum(rating - mu), n_i = n())
+#rmses <- sapply(lambdas, function(l){
+#  joined <- test %>% 
+#    left_join(tmp, by='movieId') %>% 
+#    mutate(b_i = sum/(n_i+l)) %>%
+#    replace_na(list(b_i=0))
+#    predicted_ratings <- mu + joined$b_i
+#    return(RMSE(predicted_ratings, test$rating))
+#})
+#lambda <- lambdas[which.min(rmses)] #2.35
+lambda <- 2.35
+joined <- test %>% 
+  left_join(tmp, by='movieId') %>% 
+  mutate(b_i = sum/(n_i+lambda)) %>%
+  replace_na(list(b_i=0))
+movie_reg_means <- train %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu)/(n()+lambda), n_i = n())
+predicted_ratings <- mu + joined$b_i
+RMSE_movie_Adj <- RMSE(predicted_ratings, test$rating)
+```
+
+
+
+We do a second grid sweep to find a lambda to adjust for the user rating bias. 
+
+
+
+```{r}
+lambdas_2 = seq(0,8,0.1)
+#rmses_2 <- sapply(lambdas_2, function(l){
+#  user_reg_means <- train %>% 
+#    left_join(movie_reg_means) %>%
+#    mutate(resids = rating - mu - b_i) %>% 
+#    group_by(userId) %>%
+#    summarize(b_u = sum(resids)/(n()+l))
+#  joined <- test %>% 
+#    left_join(movie_reg_means, by='movieId') %>% 
+#    left_join(user_reg_means, by='userId') %>% 
+#    replace_na(list(b_i=0, b_u=0))
+#  predicted_ratings <- mu + joined$b_i + joined$b_u
+  
+  
+#  return(RMSE(predicted_ratings, test$rating))
+#})
+#lambda_2 <- lambdas_2[which.min(rmses_2)] #3.7
+lambda_2 <- 3.7
+user_reg_means <- train %>% 
+  left_join(movie_reg_means) %>%
+  mutate(resids = rating - mu - b_i) %>% 
+  group_by(userId) %>%
+  summarize(b_u = sum(resids)/(n()+lambda_2))
+joined <- test %>% 
+  left_join(movie_reg_means, by='movieId') %>% 
+  left_join(user_reg_means, by='userId') %>% 
+  replace_na(list(b_i=0, b_u=0))
+predicted_ratings <- mu + joined$b_i + joined$b_u
+  
+  
+RMSE_User_Movie_Adj <- RMSE(predicted_ratings, test$rating)
+```
+
+
+
+We make a smaller set for PCA.
+
+
+
+```{r}
+train_small <- train %>% 
+    filter(movieId %in% unique(test$movieId) &
+             userId %in% unique(test$userId)) %>%
+    group_by(movieId) %>% 
+    group_by(userId) %>% 
+    filter(n()>=250) %>% 
+    ungroup  
+```
+
+
+
+We keep processing the subset so we have a matrix with each user and movie. Using this subset, we will then use PCA to attempt to detect latent patterns in movie ratings among users and movies.
+
+
+```{r}
+#subset for PCA
+train_small <- train_small %>% 
+  left_join(movie_reg_means, by = "movieId") %>% 
+  left_join(user_reg_means, by = "userId")
+train_small <- train_small %>% mutate(resids = rating - mu - b_i - b_u)
+#matrix for PCA 
+r <- train_small %>% 
+  select(userId, movieId, resids) %>%
+  spread(movieId, resids) %>%
+  as.matrix()
+dim(r)
+#make it informative
+rownames(r) <- r[,1]
+r <- r[,-1]
+dim(r)
+#dear god save this 
+save.image(file = "WS.Rdata")
+```
+
+
+We execute PCA and extract all components with Eigenvalues greater than 1 from the decomposition of the variance covariance matrix in PCA.  
+
+
+
+```{r}
+load('WS.RData')
+require(bigpca)
+require(bigalgebra)
+rm(joined)
+rm(train_small)
+#do the PCA
+set.seed(1)
+options(digits = 2)
+r[is.na(r)] <- 0
+pca <- prcomp(r - rowMeans(r), center=TRUE, scale = F) ## svd is faster here
+Eigen <- pca[["sdev"]]^2
+k <- sum(Eigen >= 1)
+pred <- pca$x[,1:k] %*% t(pca$rotation[,1:k])
+colnames(pred) <- colnames(r)
+```
+
+
+
+We continue. We are almost at making our predictions. 
+
+
+
+```{r}
+interaction <- 
+    data.frame(userId = as.numeric(rownames(r)), pred, check.names=FALSE) %>% 
+    tbl_df %>%
+    gather(movieId, b_ui, -userId) %>% 
+    mutate(movieId = as.numeric(movieId))
+joined <- test %>% 
+  left_join(movie_reg_means, by='movieId') %>% 
+  left_join(user_reg_means, by='userId') %>% 
+  left_join(interaction, by=c('movieId','userId')) 
+joined <- joined %>% replace_na(list(b_i=0, b_u=0, b_ui=0))
+predicted_ratings <- mu + joined$b_i + joined$b_u + joined$b_ui
+predicted_ratings[which(predicted_ratings < 0)] = 0
+predicted_ratings[which(predicted_ratings > 5)] = 5
+matrix_decomp_model_rmse <- RMSE(predicted_ratings, test$rating) #.884301705400914
+options(digits = 6)
+rmse_results <- data.frame(methods = c("Movie Adjusted Means", "User and Movie Adjusted Means", "PCA Matrix Decomposition"), results = c(RMSE_movie_Adj, RMSE_User_Movie_Adj, matrix_decomp_model_rmse))
+#write.csv(rmse_results,file = "C:/Users/debri/Desktop/BST 260/DanielEBriggs-2017HW6/ResultsRMSE.csv")
+```
+
+
+We now make the predictions on the test data set. We will use PCA in addition to adjusted user means and movie means.
+
+
+
+```{r}
+filename <- 'movielens-test.csv.gz'
+url <- "https://github.com/datasciencelabs/data/blob/master/movielens-test.csv.gz?raw=true"
+download.file(url, filename, mod = 'wb')
+tester <- read_csv(gzfile(filename))
+  
+pred <- tester %>%   
+  left_join(movie_reg_means, by='movieId') %>% 
+  left_join(user_reg_means, by='userId') %>% 
+  left_join(interaction, by=c('movieId','userId')) %>% 
+  replace_na(list(b_i = 0, b_u = 0, b_ui = 0)) %>%
+  mutate(rating = mu + b_i + b_u + b_ui)
+#clean the ratings to be in increments of 0.5 like Netflix. Cap at 5 and minimize at 0.
+ind.d <- which(pred$rating > 5)
+ind.u <- which(pred$rating < 0)
+pred$rating[ind.d] <- 5
+pred$rating[ind.u] <- 0
+write.csv(pred, file = "Predictions.csv")
+```
