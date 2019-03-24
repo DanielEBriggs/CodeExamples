@@ -17,7 +17,6 @@ library(tidyverse)
 library(scales)
 library(wordcloud)
 
-setwd('C:/Users/debri/Desktop/BST 260 Project/GroupProjectBST260')
 tweets <- read.csv("text_identities.csv", stringsAsFactors = FALSE)
 source("DateRoundFunction.R")
 tweets$created <- myRound(tweets$created)
